@@ -1,0 +1,1124 @@
+import { API_BASE } from '../constants'
+import type {
+  Job,
+  User,
+  AdminStats,
+  Post,
+  UserRole,
+  SelectableRole,
+  AppNotification,
+  PublicProfile,
+  Conversation,
+  ChatMessage,
+  UserViolation,
+  ModerationResult,
+  HrVerificationsResponse,
+  Client,
+  ClientBilling,
+  ClientOverviewStats,
+} from '../types'
+
+// Immediate sanitization of legacy static/mock local storage keys
+try {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    localStorage.removeItem('namma_mock_conversations')
+    localStorage.removeItem('namma_candidates_cache')
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i)
+      if (k && (k.startsWith('namma_chat_msgs_') || k.startsWith('namma_local_follows'))) {
+        localStorage.removeItem(k)
+      }
+    }
+  }
+} catch {}
+
+class ApiClient {
+  private token: string | null = null
+  private inFlightRequests: Map<string, Promise<any>> = new Map()
+
+  setToken(t: string | null) {
+    this.token = t
+    this.inFlightRequests.clear()
+    cachedNotifications = null
+    lastNotificationsFetch = 0
+    if (t) {
+      localStorage.setItem('namma_token', t)
+      localStorage.setItem('auth_token', t)
+    } else {
+      localStorage.removeItem('namma_token')
+      localStorage.removeItem('auth_token')
+    }
+  }
+
+  getToken(): string | null {
+    if (!this.token) {
+      this.token = localStorage.getItem('namma_token') || localStorage.getItem('auth_token')
+    }
+    return this.token
+  }
+
+  async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const currentToken = this.getToken()
+    const method = (options.method || 'GET').toUpperCase()
+
+    // In-flight GET request deduplication to avoid multiple concurrent duplicate queries
+    const dedupKey = method === 'GET' ? `${currentToken || 'anon'}::${endpoint}` : null
+    if (dedupKey && this.inFlightRequests.has(dedupKey)) {
+      return this.inFlightRequests.get(dedupKey)! as Promise<T>
+    }
+
+    const execPromise = this.executeRequest<T>(endpoint, options, currentToken, method)
+
+    if (dedupKey) {
+      this.inFlightRequests.set(dedupKey, execPromise)
+      execPromise.finally(() => {
+        this.inFlightRequests.delete(dedupKey)
+      })
+    }
+
+    return execPromise
+  }
+
+  private async executeRequest<T>(
+    endpoint: string,
+    options: RequestInit,
+    currentToken: string | null,
+    _method: string
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...((options.headers as Record<string, string>) || {}),
+    }
+
+    if (currentToken && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${currentToken}`
+    }
+
+    const url = `${API_BASE}${endpoint}`
+    const res = await fetch(url, { ...options, headers })
+    const data = await res.json().catch(() => ({}))
+
+    if (!res.ok) {
+      if (res.status === 401 && (data.error?.includes('User not found') || data.error?.includes('deactivated') || data.error?.includes('Unauthorized'))) {
+        try {
+          localStorage.removeItem('namma_user')
+          localStorage.removeItem('namma_token')
+          sessionStorage.removeItem('namma_active_tab')
+          sessionStorage.removeItem('applied_job_ids')
+        } catch {}
+        this.setToken(null)
+      }
+      throw new Error(data.error || `HTTP ${res.status}: Failed request to ${endpoint}`)
+    }
+
+    return data as T
+  }
+}
+
+export const apiClient = new ApiClient()
+
+export const authService = {
+  async devLogin(
+    email: string,
+    role: UserRole,
+    full_name: string,
+    details?: { company?: string; position?: string; phone?: string }
+  ) {
+    return apiClient.request<{ token: string; user: User }>('/api/auth/dev-login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        role,
+        full_name,
+        company: details?.company,
+        position: details?.position,
+        phone: details?.phone,
+      }),
+    })
+  },
+
+  async register(
+    email: string,
+    role: UserRole,
+    full_name: string,
+    details?: { company?: string; position?: string; phone?: string }
+  ) {
+    try {
+      return await apiClient.request<{ token: string; user: User; message: string }>('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          role,
+          full_name,
+          company: details?.company,
+          position: details?.position,
+          phone: details?.phone,
+        }),
+      })
+    } catch (err: any) {
+      if (err.message?.includes('404')) {
+        const res = await this.devLogin(email, role, full_name, details)
+        return {
+          token: res.token,
+          user: res.user,
+          message: 'Account created successfully',
+        }
+      }
+      throw err
+    }
+  },
+
+  async googleAuth(id_token: string, picture?: string, selected_role?: SelectableRole) {
+    return apiClient.request<{ token: string; user: User }>('/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ id_token, picture, selected_role, role: selected_role }),
+    })
+  },
+
+  async getMe() {
+    return apiClient.request<{ user: User }>('/api/auth/me')
+  },
+
+  async sendWhatsAppOtp(phone: string, full_name?: string, selected_role?: SelectableRole) {
+    return await apiClient.request<{
+      success: boolean
+      message: string
+      phone: string
+      expires_in: number
+      dev_otp?: string
+    }>('/api/auth/whatsapp/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, full_name, selected_role }),
+    })
+  },
+
+  async verifyWhatsAppOtp(phone: string, otp: string, full_name?: string, selected_role?: SelectableRole) {
+    return await apiClient.request<{ token: string; user: User }>(
+      '/api/auth/whatsapp/verify-otp',
+      {
+        method: 'POST',
+        body: JSON.stringify({ phone, otp, full_name, selected_role }),
+      }
+    )
+  },
+}
+
+export const jobsService = {
+  async getJobs(forceRefresh?: boolean) {
+    const url = forceRefresh ? '/api/jobs?refresh=true' : '/api/jobs'
+    return apiClient.request<{
+      jobs: Job[]
+      total_count?: number
+      registered_only?: boolean
+      message?: string
+    }>(url)
+  },
+
+  async postJob(payload: {
+    title: string
+    company_name: string
+    company_logo?: string
+    image_url?: string
+    location: string
+    workplace_type: string
+    employment_type: string
+    description: string
+    salary_range?: string
+  }) {
+    return apiClient.request<{ success: boolean; job_id: string }>('/api/jobs', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async applyJob(
+    jobId: string,
+    payload: {
+      candidate_name: string
+      candidate_email: string
+      candidate_phone?: string
+      resume_url: string
+    }
+  ) {
+    return apiClient.request<{ success: boolean; message: string; application_id: string }>(
+      `/api/jobs/${jobId}/apply`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    )
+  },
+
+  async deleteJob(jobId: string) {
+    return apiClient.request<{ success: boolean; message: string }>(`/api/jobs/${jobId}`, {
+      method: 'DELETE',
+    })
+  },
+
+  async getJobApplications(jobId: string) {
+    return apiClient.request<{
+      job_id: string
+      job_title: string
+      applications: Array<{
+        id: string
+        job_id: string
+        applicant_user_id?: string
+        candidate_name: string
+        candidate_email: string
+        candidate_phone?: string
+        resume_url: string
+        created_at: string
+        candidate_avatar?: string
+        candidate_headline?: string
+        candidate_skills?: string
+      }>
+      total_count: number
+    }>(`/api/jobs/${jobId}/applications`)
+  },
+
+  async getMyApplications() {
+    return apiClient.request<{
+      applications: Array<{
+        application_id: string
+        job_id: string
+        applied_at: string
+        resume_url: string
+        title: string
+        company_name: string
+        location: string
+        workplace_type: string
+        employment_type: string
+        salary_range: string
+      }>
+    }>('/api/employee/my-applications')
+  },
+}
+
+export const adminService = {
+  async getUsers() {
+    return apiClient.request<{ users: User[] }>('/api/admin/users')
+  },
+
+  async updateUserRole(userId: string, role: 'manager' | 'employee' | 'staff') {
+    return apiClient.request<{ success: boolean; message: string; new_role: UserRole }>(
+      `/api/admin/users/${userId}/role`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ role }),
+      }
+    )
+  },
+
+  async getStats() {
+    return apiClient.request<{ stats: AdminStats }>('/api/admin/stats')
+  },
+
+  async getHrVerifications(status: 'pending' | 'active' | 'rejected' | 'all' = 'all') {
+    return apiClient.request<HrVerificationsResponse>(`/api/admin/hr-verifications?status=${status}`)
+  },
+
+  async approveHrVerification(userId: string, notes?: string) {
+    return apiClient.request<{ success: boolean; message: string; user: any; emailSent?: boolean; emailError?: string | null }>(
+      `/api/admin/hr-verifications/${userId}/approve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ notes: notes || '' }),
+      }
+    )
+  },
+
+  async rejectHrVerification(userId: string, reason: string) {
+    return apiClient.request<{ success: boolean; message: string; user: any; emailSent?: boolean; emailError?: string | null }>(
+      `/api/admin/hr-verifications/${userId}/reject`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason || 'Verification requirements not met' }),
+      }
+    )
+  },
+}
+
+export const feedService = {
+  async getPosts() {
+    try {
+      const res = await apiClient.request<{ posts?: Post[]; thoughts?: Post[]; employee_posts?: Post[] }>('/api/thoughts')
+      return { posts: res.thoughts || res.posts || res.employee_posts || [] }
+    } catch (err: any) {
+      if (err.message?.includes('404')) {
+        try {
+          const res = await apiClient.request<{ posts?: Post[]; employee_posts?: Post[] }>('/api/employee-posts')
+          return { posts: res.employee_posts || res.posts || [] }
+        } catch {
+          return apiClient.request<{ posts: Post[] }>('/api/posts')
+        }
+      }
+      throw err
+    }
+  },
+
+  async createPost(
+    contentOrPayload: string | { title?: string; topic?: string; content: string; media_urls?: string[] },
+    media_urls: string[] = [],
+    title?: string,
+    topic?: string
+  ) {
+    let body: any = {}
+    if (typeof contentOrPayload === 'object' && contentOrPayload !== null) {
+      body = contentOrPayload
+    } else {
+      body = { content: contentOrPayload, media_urls, title, topic }
+    }
+    try {
+      return await apiClient.request<{ success: boolean; post_id: string; thought_id?: string }>('/api/thoughts', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+    } catch (err: any) {
+      if (err.message?.includes('404')) {
+        return apiClient.request<{ success: boolean; post_id: string }>('/api/posts', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })
+      }
+      throw err
+    }
+  },
+
+  async likePost(postId: string) {
+    try {
+      return await apiClient.request<{ success: boolean; likes_count: number; liked?: boolean }>(
+        `/api/thoughts/${postId}/like`,
+        {
+          method: 'POST',
+        }
+      )
+    } catch (err: any) {
+      if (err.message?.includes('404')) {
+        return apiClient.request<{ success: boolean; likes_count: number; liked?: boolean }>(
+          `/api/posts/${postId}/like`,
+          {
+            method: 'POST',
+          }
+        )
+      }
+      throw err
+    }
+  },
+}
+
+export const platformService = {
+  async getOverview() {
+    return apiClient.request<{
+      total_jobs: number
+      total_posts: number
+      total_users: number
+      recent_jobs: Array<{
+        id: string
+        title: string
+        company_name: string
+        location: string
+        workplace_type: string
+        created_at: string
+      }>
+      edge_status: string
+      region: string
+    }>('/api/platform/overview')
+  },
+}
+
+export const MAX_UPLOAD_SIZE = 10 * 1024 * 1024 // 10 MB
+
+export const uploadService = {
+  async uploadFile(file: File, folder: 'resumes' | 'jobs' | 'avatars' | 'posts' = 'resumes') {
+    if (!file || file.size <= 0) {
+      throw new Error('Selected file is empty (0 bytes). Please choose a valid file.')
+    }
+
+    if (file.size > MAX_UPLOAD_SIZE) {
+      throw new Error('File size exceeds 10MB limit. Please upload a file under 10MB.')
+    }
+
+    const cleanFileName = file.name.toLowerCase()
+    const lastDot = cleanFileName.lastIndexOf('.')
+    const ext = lastDot !== -1 ? cleanFileName.slice(lastDot) : ''
+
+    if (folder === 'resumes') {
+      const validDocExts = ['.pdf', '.doc', '.docx']
+      if (!validDocExts.includes(ext) && file.type !== 'application/pdf') {
+        throw new Error('Invalid resume format. Allowed formats: PDF, DOC, DOCX')
+      }
+    } else if (['avatars', 'jobs', 'posts'].includes(folder)) {
+      const validImgExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg']
+      if (!validImgExts.includes(ext) && !file.type.startsWith('image/')) {
+        throw new Error('Invalid media format. Only image files (JPG, PNG, WebP, GIF, SVG) under 10MB are allowed.')
+      }
+    }
+
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('folder', folder)
+
+    const res = await fetch(`${API_BASE}/api/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    const data = await res.json()
+    if (!res.ok) {
+      throw new Error(data.error || 'Upload to Cloudflare R2 failed')
+    }
+
+    return data as {
+      success: boolean
+      url: string
+      key: string
+      filename: string
+      size: number
+    }
+  },
+}
+
+export const userService = {
+  async getMyProfile() {
+    return apiClient.request<{ profile: PublicProfile }>('/api/user/profile')
+  },
+
+  async updateProfile(profileData: Partial<User>) {
+    return apiClient.request<{ success: boolean; message: string; user: User }>(
+      '/api/user/profile',
+      {
+        method: 'PATCH',
+        body: JSON.stringify(profileData),
+      }
+    )
+  },
+}
+
+export const hrService = {
+  async submitProfile(profileData: {
+    full_name: string
+    company: string
+    position: string
+    phone?: string
+    location?: string
+    bio?: string
+    headline?: string
+    avatar_url?: string
+  }) {
+    return apiClient.request<{ success: boolean; message: string; is_edit: boolean }>(
+      '/api/hr/profile/submit',
+      {
+        method: 'POST',
+        body: JSON.stringify(profileData),
+      }
+    )
+  },
+  async approveProfileRequest(userId: string) {
+    return apiClient.request<{ success: boolean; message: string }>(
+      `/api/admin/hr-profile-requests/${userId}/approve`,
+      { method: 'POST' }
+    )
+  },
+  async rejectProfileRequest(userId: string, reason: string) {
+    return apiClient.request<{ success: boolean; message: string }>(
+      `/api/admin/hr-profile-requests/${userId}/reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) }
+    )
+  },
+}
+
+let cachedNotifications: { notifications: AppNotification[]; unread_count: number } | null = null
+let lastNotificationsFetch = 0
+
+export const notificationService = {
+  clearCache() {
+    cachedNotifications = null
+    lastNotificationsFetch = 0
+  },
+
+  async getNotifications(forceRefresh = false) {
+    const now = Date.now()
+    if (!forceRefresh && cachedNotifications && now - lastNotificationsFetch < 60000) {
+      return cachedNotifications
+    }
+    const res = await apiClient.request<{ notifications: AppNotification[]; unread_count: number }>(
+      '/api/notifications'
+    )
+    if (res?.notifications) {
+      cachedNotifications = res
+      lastNotificationsFetch = now
+    }
+    return res
+  },
+
+  async markAsRead(id: string) {
+    cachedNotifications = null
+    const res = await apiClient.request<{ success: boolean; id: string }>(`/api/notifications/${id}/read`, {
+      method: 'PATCH',
+    })
+    try {
+      window.dispatchEvent(new Event('namma_notifications_updated'))
+    } catch {}
+    return res
+  },
+
+  async markAllAsRead() {
+    cachedNotifications = null
+    const res = await apiClient.request<{ success: boolean; message: string }>(
+      '/api/notifications/mark-all-read',
+      {
+        method: 'POST',
+      }
+    )
+    try {
+      window.dispatchEvent(new Event('namma_notifications_updated'))
+    } catch {}
+    return res
+  },
+}
+
+export interface CandidateSearchParams {
+  q?: string
+  skill?: string
+  location?: string
+  category?: string
+  jd?: string
+  with_resume?: boolean
+}
+
+export const candidateService = {
+  async searchCandidates(params: CandidateSearchParams = {}) {
+    try {
+      let res: {
+        candidates: User[]
+        total_count: number
+        jd_extracted_skills?: string[]
+        corrected_query?: string
+        original_query?: string
+      }
+
+      if (params.jd && params.jd.trim().length > 0) {
+        res = await apiClient.request<{
+          candidates: User[]
+          total_count: number
+          jd_extracted_skills?: string[]
+          corrected_query?: string
+          original_query?: string
+        }>('/api/candidates/search', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        })
+      } else {
+        const queryParts: string[] = []
+        if (params.q) queryParts.push(`q=${encodeURIComponent(params.q)}`)
+        if (params.skill) queryParts.push(`skill=${encodeURIComponent(params.skill)}`)
+        if (params.location) queryParts.push(`location=${encodeURIComponent(params.location)}`)
+        if (params.category) queryParts.push(`category=${encodeURIComponent(params.category)}`)
+        if (params.with_resume) queryParts.push('with_resume=true')
+
+        const qs = queryParts.length ? `?${queryParts.join('&')}` : ''
+        res = await apiClient.request<{
+          candidates: User[]
+          total_count: number
+          jd_extracted_skills?: string[]
+          corrected_query?: string
+          original_query?: string
+        }>(`/api/candidates/search${qs}`)
+      }
+
+      return {
+        candidates: res.candidates || [],
+        total_count: res.total_count ?? (res.candidates ? res.candidates.length : 0),
+        jd_extracted_skills: res.jd_extracted_skills || [],
+        corrected_query: res.corrected_query,
+        original_query: res.original_query,
+      }
+    } catch {
+      return {
+        candidates: [],
+        total_count: 0,
+        jd_extracted_skills: [],
+      }
+    }
+  },
+
+  async expressInterest(candidateId: string, message?: string): Promise<{ success: boolean; message: string }> {
+    return await apiClient.request<{ success: boolean; message: string }>(
+      `/api/candidates/${candidateId}/interest`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      }
+    )
+  },
+}
+
+// --------------------------------------------------------------------------
+// SOCIAL NETWORKING & FOLLOW SERVICE
+// --------------------------------------------------------------------------
+export const socialService = {
+  async discoverUsers(params: {
+    search?: string
+    location?: string
+    page?: number
+    limit?: number
+  } = {}): Promise<{
+    users: User[]
+    pagination: { page: number; limit: number; total: number; has_more: boolean }
+  }> {
+    const page = params.page || 1
+    const limit = params.limit || 20
+    const queryParts: string[] = [`page=${page}`, `limit=${limit}`]
+    if (params.search) queryParts.push(`search=${encodeURIComponent(params.search)}`)
+    if (params.location) queryParts.push(`location=${encodeURIComponent(params.location)}`)
+
+    try {
+      return await apiClient.request<{
+        users: User[]
+        pagination: { page: number; limit: number; total: number; has_more: boolean }
+      }>(`/api/network?${queryParts.join('&')}`)
+    } catch {
+      return {
+        users: [],
+        pagination: { page, limit, total: 0, has_more: false },
+      }
+    }
+  },
+
+  async getUserProfile(userId: string): Promise<{ profile: PublicProfile }> {
+    return await apiClient.request<{ profile: PublicProfile }>(`/api/users/${userId}/profile`)
+  },
+
+  async getFollowStatus(userId: string): Promise<{ success: boolean; is_following: boolean; followers_count: number; following_count: number }> {
+    return await apiClient.request<{ success: boolean; is_following: boolean; followers_count: number; following_count: number }>(
+      `/api/users/${userId}/follow-status`
+    )
+  },
+
+  async followUser(userId: string): Promise<{ success: boolean; is_following: boolean; followers_count: number }> {
+    const res = await apiClient.request<{
+      success: boolean
+      is_following: boolean
+      followers_count: number
+    }>(`/api/users/${userId}/follow`, { method: 'POST' })
+    notificationService.clearCache()
+    try {
+      window.dispatchEvent(new Event('namma_notifications_updated'))
+    } catch {}
+    return res
+  },
+
+  async unfollowUser(userId: string): Promise<{ success: boolean; is_following: boolean; followers_count: number }> {
+    const res = await apiClient.request<{
+      success: boolean
+      is_following: boolean
+      followers_count: number
+    }>(`/api/users/${userId}/follow`, { method: 'DELETE' })
+    notificationService.clearCache()
+    try {
+      window.dispatchEvent(new Event('namma_notifications_updated'))
+    } catch {}
+    return res
+  },
+
+  async getFollowers(userId: string, params: { page?: number; limit?: number } = {}): Promise<{ followers: User[] }> {
+    try {
+      return await apiClient.request<{ followers: User[] }>(`/api/users/${userId}/followers?page=${params.page || 1}&limit=${params.limit || 20}`)
+    } catch {
+      return { followers: [] }
+    }
+  },
+
+  async getFollowing(userId: string, params: { page?: number; limit?: number } = {}): Promise<{ following: User[] }> {
+    try {
+      return await apiClient.request<{ following: User[] }>(`/api/users/${userId}/following?page=${params.page || 1}&limit=${params.limit || 20}`)
+    } catch {
+      return { following: [] }
+    }
+  },
+}
+
+// --------------------------------------------------------------------------
+// 1-TO-1 CHAT & MESSAGING SERVICE (WITH AI MODERATION)
+// --------------------------------------------------------------------------
+export const chatService = {
+  async getConversations(): Promise<{ conversations: Conversation[] }> {
+    try {
+      return await apiClient.request<{ conversations: Conversation[] }>('/api/conversations')
+    } catch {
+      return { conversations: [] }
+    }
+  },
+
+  async createOrGetConversation(recipientId: string): Promise<{ conversation: { id: string; participant: any } }> {
+    return await apiClient.request<{ conversation: { id: string; participant: any } }>('/api/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ recipient_id: recipientId }),
+    })
+  },
+
+  async getMessages(conversationId: string, limit = 50): Promise<{ messages: ChatMessage[] }> {
+    try {
+      return await apiClient.request<{ messages: ChatMessage[] }>(`/api/conversations/${conversationId}/messages?limit=${limit}`)
+    } catch {
+      return { messages: [] }
+    }
+  },
+
+  async sendMessage(conversationId: string, content: string): Promise<{ success: boolean; message: ChatMessage }> {
+    return await apiClient.request<{ success: boolean; message: ChatMessage }>(
+      `/api/conversations/${conversationId}/messages`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      }
+    )
+  },
+
+  async markConversationAsRead(conversationId: string): Promise<{ success: boolean }> {
+    try {
+      await apiClient.request<{ success: boolean }>(`/api/conversations/${conversationId}/read`, {
+        method: 'POST',
+      })
+    } catch {}
+
+    window.dispatchEvent(new CustomEvent('namma_messages_updated', { detail: { conversationId } }))
+    return { success: true }
+  },
+
+  async getUnreadMessagesCount(): Promise<number> {
+    try {
+      const res = await this.getConversations()
+      return (res.conversations || []).reduce((acc, c) => acc + (c.unread_count || 0), 0)
+    } catch {
+      return 0
+    }
+  },
+}
+
+// --------------------------------------------------------------------------
+// JOB POSTS & SOCIAL POSTS READ/UNREAD TRACKING SERVICE
+// --------------------------------------------------------------------------
+export const jobReadService = {
+  getStorageKey(userId?: string): string {
+    return `namma_read_job_ids_${userId || 'guest'}`
+  },
+
+  getReadJobIds(userId?: string): Set<string> {
+    try {
+      const raw = localStorage.getItem(this.getStorageKey(userId))
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch {
+      return new Set()
+    }
+  },
+
+  isJobRead(jobId: string, userId?: string): boolean {
+    return this.getReadJobIds(userId).has(jobId)
+  },
+
+  markJobAsRead(jobId: string, userId?: string): void {
+    try {
+      const set = this.getReadJobIds(userId)
+      if (set.has(jobId)) return
+      set.add(jobId)
+      localStorage.setItem(this.getStorageKey(userId), JSON.stringify(Array.from(set)))
+      window.dispatchEvent(new CustomEvent('namma_jobs_read_updated', { detail: { jobId, isRead: true } }))
+    } catch {}
+  },
+
+  markAllJobsAsRead(jobIds: string[], userId?: string): void {
+    try {
+      const set = this.getReadJobIds(userId)
+      jobIds.forEach((id) => set.add(id))
+      localStorage.setItem(this.getStorageKey(userId), JSON.stringify(Array.from(set)))
+      window.dispatchEvent(new CustomEvent('namma_jobs_read_updated', { detail: { all: true } }))
+    } catch {}
+  },
+}
+
+export const postReadService = {
+  getStorageKey(userId?: string): string {
+    return `namma_read_post_ids_${userId || 'guest'}`
+  },
+
+  getReadPostIds(userId?: string): Set<string> {
+    try {
+      const raw = localStorage.getItem(this.getStorageKey(userId))
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch {
+      return new Set()
+    }
+  },
+
+  isPostRead(postId: string, userId?: string): boolean {
+    return this.getReadPostIds(userId).has(postId)
+  },
+
+  markPostAsRead(postId: string, userId?: string): void {
+    try {
+      const set = this.getReadPostIds(userId)
+      if (set.has(postId)) return
+      set.add(postId)
+      localStorage.setItem(this.getStorageKey(userId), JSON.stringify(Array.from(set)))
+      window.dispatchEvent(new CustomEvent('namma_posts_read_updated', { detail: { postId, isRead: true } }))
+    } catch {}
+  },
+
+  markAllPostsAsRead(postIds: string[], userId?: string): void {
+    try {
+      const set = this.getReadPostIds(userId)
+      postIds.forEach((id) => set.add(id))
+      localStorage.setItem(this.getStorageKey(userId), JSON.stringify(Array.from(set)))
+      window.dispatchEvent(new CustomEvent('namma_posts_read_updated', { detail: { all: true } }))
+    } catch {}
+  },
+}
+
+// --------------------------------------------------------------------------
+// MODERATION & ADMIN SAFETY SERVICE
+// --------------------------------------------------------------------------
+export const moderationService = {
+  async checkText(text: string, contentType: 'MESSAGE' | 'PROFILE' | 'POST' = 'MESSAGE'): Promise<{ moderation: ModerationResult }> {
+    return await apiClient.request<{ moderation: ModerationResult }>('/api/moderation/check-text', {
+      method: 'POST',
+      body: JSON.stringify({ text, contentType }),
+    })
+  },
+
+  async checkImage(imageDataOrUrl: string): Promise<{ moderation: ModerationResult }> {
+    return await apiClient.request<{ moderation: ModerationResult }>('/api/moderation/check-image', {
+      method: 'POST',
+      body: JSON.stringify({ image_data: imageDataOrUrl }),
+    })
+  },
+
+  async getViolations(page = 1, limit = 25): Promise<{
+    violations: UserViolation[]
+    pagination: { page: number; limit: number; total: number }
+  }> {
+    try {
+      return await apiClient.request<{
+        violations: UserViolation[]
+        pagination: { page: number; limit: number; total: number }
+      }>(`/api/admin/violations?page=${page}&limit=${limit}`)
+    } catch {
+      return {
+        violations: [],
+        pagination: { page: 1, limit: 25, total: 0 },
+      }
+    }
+  },
+
+  async reactivateUser(userId: string): Promise<{ success: boolean; message: string }> {
+    return await apiClient.request<{ success: boolean; message: string }>(`/api/admin/users/${userId}/reactivate`, {
+      method: 'POST',
+    })
+  },
+
+  async suspendUser(userId: string, hours = 24, reason?: string): Promise<{ success: boolean; message: string; deactivated_until: string }> {
+    return await apiClient.request<{ success: boolean; message: string; deactivated_until: string }>(
+      `/api/admin/users/${userId}/suspend`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ hours, reason }),
+      }
+    )
+  },
+}
+
+// --------------------------------------------------------------------------
+// SAVED JOBS (BOOKMARK) SERVICE
+// --------------------------------------------------------------------------
+export const savedJobService = {
+  // Synchronous cache check for 0ms render
+  isSavedSync(jobId: string): boolean {
+    try {
+      const raw = localStorage.getItem('namma_saved_job_ids')
+      if (!raw) return false
+      const ids: string[] = JSON.parse(raw)
+      return ids.includes(jobId)
+    } catch {
+      return false
+    }
+  },
+
+  async getSavedJobIds(): Promise<string[]> {
+    try {
+      const res = await apiClient.request<{ saved_jobs?: Job[]; saved_ids?: string[] }>('/api/user/saved')
+      const ids = res.saved_ids || (res.saved_jobs || []).map((j: any) => j.id || j.job_id)
+      localStorage.setItem('namma_saved_job_ids', JSON.stringify(ids))
+      return ids
+    } catch {
+      return []
+    }
+  },
+
+  async getSavedJobs(): Promise<Job[]> {
+    try {
+      const res = await apiClient.request<{ saved_jobs: Job[] }>('/api/user/saved')
+      const jobs = res.saved_jobs || []
+      const ids = jobs.map((j) => j.id)
+      localStorage.setItem('namma_saved_job_ids', JSON.stringify(ids))
+      return jobs
+    } catch {
+      return []
+    }
+  },
+
+  async saveJob(jobId: string): Promise<{ success: boolean; saved: boolean }> {
+    this.addLocalSavedId(jobId)
+    try {
+      const res = await apiClient.request<{ success: boolean; saved: boolean }>(`/api/user/saved/${jobId}`, {
+        method: 'POST',
+      })
+      window.dispatchEvent(new CustomEvent('saved_jobs_updated', { detail: { jobId, saved: true } }))
+      return res
+    } catch {
+      window.dispatchEvent(new CustomEvent('saved_jobs_updated', { detail: { jobId, saved: true } }))
+      return { success: true, saved: true }
+    }
+  },
+
+  async unsaveJob(jobId: string): Promise<{ success: boolean; saved: boolean }> {
+    this.removeLocalSavedId(jobId)
+    try {
+      const res = await apiClient.request<{ success: boolean; saved: boolean }>(`/api/user/saved/${jobId}`, {
+        method: 'DELETE',
+      })
+      window.dispatchEvent(new CustomEvent('saved_jobs_updated', { detail: { jobId, saved: false } }))
+      return res
+    } catch {
+      window.dispatchEvent(new CustomEvent('saved_jobs_updated', { detail: { jobId, saved: false } }))
+      return { success: true, saved: false }
+    }
+  },
+
+  async toggleSaveJob(jobId: string): Promise<boolean> {
+    const currentlySaved = this.isSavedSync(jobId)
+    if (currentlySaved) {
+      await this.unsaveJob(jobId)
+      return false
+    } else {
+      await this.saveJob(jobId)
+      return true
+    }
+  },
+
+  addLocalSavedId(jobId: string) {
+    try {
+      const raw = localStorage.getItem('namma_saved_job_ids')
+      const ids: string[] = raw ? JSON.parse(raw) : []
+      if (!ids.includes(jobId)) {
+        ids.push(jobId)
+        localStorage.setItem('namma_saved_job_ids', JSON.stringify(ids))
+      }
+    } catch {}
+  },
+
+  removeLocalSavedId(jobId: string) {
+    try {
+      const raw = localStorage.getItem('namma_saved_job_ids')
+      const ids: string[] = raw ? JSON.parse(raw) : []
+      const filtered = ids.filter((id) => id !== jobId)
+      localStorage.setItem('namma_saved_job_ids', JSON.stringify(filtered))
+    } catch {}
+  },
+}
+
+// --------------------------------------------------------------------------
+// COMMENTS SERVICE
+// --------------------------------------------------------------------------
+
+export interface PostComment {
+  id: string
+  post_id: string
+  author_id: string
+  author_name: string
+  author_avatar: string | null
+  content: string
+  created_at: string
+}
+
+export const commentService = {
+  async getComments(postId: string): Promise<{ comments: PostComment[] }> {
+    try {
+      return await apiClient.request<{ comments: PostComment[] }>(`/api/thoughts/${postId}/comments`)
+    } catch {
+      return { comments: [] }
+    }
+  },
+
+  async postComment(postId: string, content: string): Promise<{ success: boolean; comment: PostComment }> {
+    return await apiClient.request<{ success: boolean; comment: PostComment }>(
+      `/api/thoughts/${postId}/comments`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      }
+    )
+  },
+}
+
+export const clientService = {
+  async getClients(query?: string): Promise<{ clients: Client[] }> {
+    const url = query ? `/api/clients?q=${encodeURIComponent(query)}` : '/api/clients'
+    return apiClient.request<{ clients: Client[] }>(url)
+  },
+
+  async getClient(id: string): Promise<{
+    client: Client
+    billing: ClientBilling[]
+    totals: { total_billed: number; total_paid: number; total_pending: number }
+  }> {
+    return apiClient.request<{
+      client: Client
+      billing: ClientBilling[]
+      totals: { total_billed: number; total_paid: number; total_pending: number }
+    }>(`/api/clients/${id}`)
+  },
+
+  async createClient(data: Partial<Client>): Promise<{ success: boolean; client_id: string; message: string }> {
+    return apiClient.request<{ success: boolean; client_id: string; message: string }>('/api/clients', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  async updateClient(id: string, data: Partial<Client>): Promise<{ success: boolean; message: string }> {
+    return apiClient.request<{ success: boolean; message: string }>(`/api/clients/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  },
+
+  async deleteClient(id: string): Promise<{ success: boolean; message: string }> {
+    return apiClient.request<{ success: boolean; message: string }>(`/api/clients/${id}`, {
+      method: 'DELETE',
+    })
+  },
+
+  async addClientBilling(clientId: string, data: Partial<ClientBilling>): Promise<{ success: boolean; billing_id: string; message: string }> {
+    return apiClient.request<{ success: boolean; billing_id: string; message: string }>(`/api/clients/${clientId}/billing`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  async updateClientBilling(clientId: string, billingId: string, data: Partial<ClientBilling>): Promise<{ success: boolean; message: string }> {
+    return apiClient.request<{ success: boolean; message: string }>(`/api/clients/${clientId}/billing/${billingId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  },
+
+  async deleteClientBilling(clientId: string, billingId: string): Promise<{ success: boolean; message: string }> {
+    return apiClient.request<{ success: boolean; message: string }>(`/api/clients/${clientId}/billing/${billingId}`, {
+      method: 'DELETE',
+    })
+  },
+
+  async getOverviewStats(): Promise<ClientOverviewStats> {
+    return apiClient.request<ClientOverviewStats>('/api/clients/overview/stats')
+  },
+}

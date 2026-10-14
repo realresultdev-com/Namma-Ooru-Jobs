@@ -1,0 +1,311 @@
+export type UserRole = 'admin' | 'manager' | 'employee' | 'staff'
+export type SelectableRole = 'employee' | 'manager' | 'staff'
+
+export interface Client {
+  id: string
+  client_name: string
+  company_name: string
+  phone: string
+  email: string
+  address: string
+  service_type: string
+  total_agreed_amount: number
+  status: 'active' | 'paused' | 'completed'
+  notes?: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+  total_billed?: number
+  total_paid?: number
+  total_pending?: number
+  billing_count?: number
+}
+
+export interface ClientBilling {
+  id: string
+  client_id: string
+  billing_month: string
+  billed_amount: number
+  paid_amount: number
+  pending_amount: number
+  due_date: string
+  payment_status: 'paid' | 'partially_paid' | 'pending' | 'overdue'
+  payment_date?: string
+  payment_mode?: string
+  notes?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ClientOverviewStats {
+  total_clients: number
+  active_clients: number
+  total_contract_value: number
+  total_billed: number
+  total_paid: number
+  total_pending: number
+}
+
+export type Language = 'en' | 'ta' | 'hi'
+
+export interface User {
+  id: string
+  email: string
+  google_id?: string
+  full_name: string
+  role: UserRole
+  assigned_by?: string | null
+  assigned_by_name?: string | null
+  avatar_url?: string
+  banner_url?: string
+  bio?: string
+  headline?: string
+  location?: string
+  state?: string
+  pincode?: string
+  company?: string
+  position?: string
+  experience_years?: number
+  experience_level?: 'fresher' | 'experienced' | string
+  education_degree?: string
+  education_college?: string
+  education_year?: string
+  skills?: string[]
+  phone?: string
+  date_of_birth?: string
+  age?: number
+  resume_url?: string
+  language?: Language
+  status?: string
+  rejection_reason?: string
+  verification_notes?: string
+  verified_at?: string
+  verified_by?: string
+  username?: string
+  is_active?: number | boolean
+  deactivated_until?: string | null
+  followers_count?: number
+  following_count?: number
+  is_following?: boolean
+  connections_count?: number
+  match_score?: number
+  matched_skills?: string[]
+  missing_skills?: string[]
+  match_highlights?: string[]
+  created_at?: string
+  updated_at?: string
+  pending_profile?: string | null
+}
+
+export interface LastLoginAccount {
+  id: string
+  full_name: string
+  email?: string
+  phone?: string
+  role: UserRole
+  avatar_url?: string
+  company?: string
+  position?: string
+  last_login_at: string
+}
+
+export interface Job {
+  id: string
+  poster_id: string
+  poster_name: string
+  poster_avatar?: string
+  title: string
+  company_name: string
+  company_logo?: string
+  image_url?: string
+  location: string
+  workplace_type: 'Remote' | 'Hybrid' | 'On-site'
+  employment_type: 'Full-time' | 'Part-time' | 'Contract' | 'Internship'
+  description: string
+  salary_range?: string
+  applicants_count: number
+  created_at: string
+}
+
+export interface Post {
+  id: string
+  author_id?: string
+  author_name: string
+  author_headline?: string
+  author_avatar?: string
+  author_role: UserRole
+  author_location?: string
+  title?: string
+  topic?: string
+  content: string
+  media_urls?: string[]
+  likes_count: number
+  comments_count: number
+  shares_count?: number
+  created_at: string
+  liked_by_me?: boolean
+  is_liked?: boolean
+}
+
+export interface AdminStats {
+  total_users: number
+  admins: number
+  managers_hr: number
+  employees: number
+  total_jobs: number
+  pending_hr_verifications?: number
+}
+
+export interface HrVerificationAccount {
+  id: string
+  email: string
+  full_name: string
+  role: 'manager'
+  status: 'PENDING_VERIFICATION' | 'ACTIVE' | 'REJECTED' | 'active' | string
+  rejection_reason?: string
+  verification_notes?: string
+  verified_at?: string
+  verified_by?: string
+  company?: string
+  position?: string
+  phone?: string
+  location?: string
+  headline?: string
+  bio?: string
+  avatar_url?: string
+  created_at: string
+  updated_at?: string
+  assigned_by_name?: string
+  pending_profile?: string | null
+}
+
+export interface HrVerificationsResponse {
+  success: boolean
+  verifications: HrVerificationAccount[]
+  counts: {
+    pending: number
+    active: number
+    rejected: number
+    total: number
+  }
+}
+
+export interface ApiResponse<T> {
+  data?: T
+  error?: string
+  message?: string
+}
+
+export interface AppNotification {
+  id: string
+  user_id?: string | null
+  type: 'job_posted' | 'application_received' | 'system' | 'user_follow' | 'chat_message' | 'post_like'
+  title: string
+  message: string
+  data?: string
+  is_read: number | boolean
+  created_at: string
+}
+
+export interface UserFollow {
+  id: string
+  follower_id: string
+  following_id: string
+  created_at: string
+}
+
+export interface PublicProfile {
+  id: string
+  full_name: string
+  role?: UserRole
+  username: string
+  headline?: string
+  avatar_url?: string
+  banner_url?: string
+  bio?: string
+  location?: string
+  state?: string
+  pincode?: string
+  company?: string
+  position?: string
+  experience_level?: string
+  experience_years?: number
+  education_degree?: string
+  education_college?: string
+  education_year?: string
+  skills?: string[]
+  followers_count: number
+  following_count: number
+  is_following: boolean
+  is_self: boolean
+  is_active: boolean
+  created_at?: string
+  thoughts?: Post[]
+  posts?: Post[]
+}
+
+export interface ConversationParticipant {
+  id: string
+  full_name: string
+  username?: string
+  avatar_url?: string
+  headline?: string
+  is_active: boolean
+}
+
+export interface ChatMessage {
+  id: string
+  conversation_id: string
+  sender_id: string
+  content: string
+  created_at: string
+  read_at?: string | null
+  moderation_status?: 'APPROVED' | 'REJECTED' | 'PENDING'
+}
+
+export interface Conversation {
+  id: string
+  updated_at: string
+  participant: ConversationParticipant
+  last_message?: ChatMessage | null
+  unread_count: number
+}
+
+export type ViolationType =
+  | 'BAD_WORD'
+  | 'HARASSMENT'
+  | 'SEXUAL_TEXT'
+  | 'NUDITY_IMAGE'
+  | 'EXPLICIT_IMAGE'
+  | 'VIOLENT_IMAGE'
+  | 'OTHER'
+
+export type ContentType = 'MESSAGE' | 'PROFILE' | 'IMAGE' | 'POST' | 'COMMENT'
+export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+export interface UserViolation {
+  id: string
+  user_id: string
+  violation_type: ViolationType
+  content_type: ContentType
+  severity: Severity
+  reason: string
+  created_at: string
+  deactivated_until?: string | null
+  metadata?: string | Record<string, any>
+  full_name?: string
+  email?: string
+  avatar_url?: string
+  user_status?: string
+  user_is_active?: number | boolean
+}
+
+export interface ModerationResult {
+  isSafe: boolean
+  violationType?: ViolationType
+  severity?: Severity
+  reason?: string
+  confidence?: number
+  flaggedTerms?: string[]
+}
+
