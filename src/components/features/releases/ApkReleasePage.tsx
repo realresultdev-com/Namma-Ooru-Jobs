@@ -4,7 +4,7 @@ import { Download, Copy, Check, ArrowLeft, QrCode } from 'lucide-react'
 import { useToast } from '../../../context/ToastContext'
 
 const APK_URL =
-  'https://namma-ooru-jobs-api.aravinth-dental-crm.workers.dev/api/media/apks/namma-ooru-jobs-latest.apk'
+  'https://namma-ooru-jobs-api.apkavin483.workers.dev/api/media/apks/namma-ooru-jobs-latest.apk'
 
 interface ApkReleasePageProps {
   onBackToApp?: () => void

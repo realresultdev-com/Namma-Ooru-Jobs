@@ -1,6 +1,6 @@
 import type { UserRole } from '../types'
 
-export const API_BASE = 'https://namma-ooru-jobs-api.aravinth-dental-crm.workers.dev'
+export const API_BASE = 'https://namma-ooru-jobs-api.apkavin483.workers.dev'
 
 export const GOOGLE_WEB_CLIENT_ID =
   '981989878451-nltb7s56th0aor7nrold8ooj9u3lnk10.apps.googleusercontent.com'
