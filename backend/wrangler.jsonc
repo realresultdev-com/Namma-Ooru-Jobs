@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "namma-ooru-jobs-api",
+  "account_id": "ceb947110574fa4640aa9a921f1b61e8",
   "main": "src/index.ts",
   "compatibility_date": "2025-02-24",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,17 +9,11 @@
     {
       "binding": "DB",
       "database_name": "namma-ooru-jobs-db",
-      "database_id": "a3f752ce-64b2-40ee-bef5-581d1f6f45a2"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "MEDIA_BUCKET",
-      "bucket_name": "namma-ooru-jobs-media"
+      "database_id": "4fe5ed19-9570-4b8d-bf26-54f49c921829"
     }
   ],
   "vars": {
     "EMAIL_FROM": "Namma Ooru Jobs <onboarding@resend.dev>",
-    "APP_URL": "https://namma-ooru-jobs.pages.dev"
+    "APP_URL": "https://namma-ooru-jobs-ck1.pages.dev"
   }
 }

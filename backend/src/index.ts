@@ -77,7 +77,7 @@ export interface UserRecord {
 
 export type Bindings = {
   DB: D1Database
-  MEDIA_BUCKET: R2Bucket
+  MEDIA_BUCKET?: R2Bucket
   JWT_SECRET?: string
   META_WHATSAPP_TOKEN?: string
   WHATSAPP_PHONE_NUMBER_ID?: string
@@ -4462,6 +4462,10 @@ app.post('/api/upload', async (c) => {
 
     const arrayBuffer = await file.arrayBuffer()
 
+    if (!c.env.MEDIA_BUCKET) {
+      return c.json({ error: 'R2 Media storage not configured' }, 503)
+    }
+
     // Upload to Cloudflare R2
     await c.env.MEDIA_BUCKET.put(key, arrayBuffer, {
       httpMetadata: {
@@ -4498,6 +4502,10 @@ app.get('/api/media/*', async (c) => {
       return c.text('Not found', 404)
     }
 
+    if (!c.env.MEDIA_BUCKET) {
+      return c.text('Media storage not configured', 503)
+    }
+
     const object = await c.env.MEDIA_BUCKET.get(path)
     if (!object) {
       return c.text('Object not found in R2 bucket', 404)
@@ -4521,6 +4529,10 @@ app.delete('/api/media/*', requireAuth, async (c) => {
     const path = c.req.path.replace(/^\/api\/media\//, '')
     if (!path || path.includes('..') || path.startsWith('/')) {
       return c.json({ error: 'Invalid or missing file path' }, 400)
+    }
+
+    if (!c.env.MEDIA_BUCKET) {
+      return c.json({ error: 'Media storage not configured' }, 503)
     }
 
     await c.env.MEDIA_BUCKET.delete(path)

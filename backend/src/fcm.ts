@@ -105,6 +105,9 @@ export async function sendFcmNotification(
   payload: FcmPayload
 ): Promise<{ success: boolean; response?: any; error?: string }> {
   try {
+    if (!sa || !sa.project_id || !sa.private_key || !sa.client_email) {
+      return { success: false, error: 'Firebase service account not configured' }
+    }
     const accessToken = await getGoogleAccessToken(sa)
 
     const url = `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`

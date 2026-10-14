@@ -902,7 +902,7 @@ function MainContent() {
     if (user?.role === 'employee') {
       const token = localStorage.getItem('namma_token')
       if (token && !sessionStorage.getItem('applied_job_ids')) {
-        fetch(`${import.meta.env.VITE_API_BASE_URL || 'https://namma-ooru-jobs-api.apkavin483.workers.dev'}/api/employee/my-applications`, {
+        fetch(`${import.meta.env.VITE_API_BASE_URL || 'https://namma-ooru-jobs-api.aravinth-dental-crm.workers.dev'}/api/employee/my-applications`, {
           headers: { Authorization: `Bearer ${token}` },
         })
           .then((r) => r.json())
